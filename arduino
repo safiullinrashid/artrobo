@@ -1,0 +1,177 @@
+#include <ServoEasing.hpp>
+
+#define DEFAULT_MICROSECONDS_FOR_0_DEGREE 500
+#define DEFAULT_MICROSECONDS_FOR_180_DEGREE 2500
+
+const int SERVO_PIN1 = 2;
+const int SERVO_PIN2 = 3;
+const int SERVO_PIN3 = 4;
+
+const int TARGET_ANGLE1 = 0;
+const int TARGET_ANGLE2 = 45;
+const int TARGET_ANGLE3 = 135;
+
+const int LIFT_SERVO_ANGLE = 0;
+const int LOWER_SERVO_ANGLE = 5;
+
+ServoEasing servo1;
+ServoEasing servo2;
+ServoEasing servo3;
+
+enum CommandType {
+  G0_COMMAND,
+  G1_COMMAND,
+  UNKNOWN_COMMAND
+};
+
+void initializeServos() {
+  servo1.attach(SERVO_PIN1, DEFAULT_MICROSECONDS_FOR_0_DEGREE, DEFAULT_MICROSECONDS_FOR_180_DEGREE, 0, 180);
+  servo2.attach(SERVO_PIN2, DEFAULT_MICROSECONDS_FOR_0_DEGREE, DEFAULT_MICROSECONDS_FOR_180_DEGREE, 0, 180);
+  servo3.attach(SERVO_PIN3, DEFAULT_MICROSECONDS_FOR_0_DEGREE, DEFAULT_MICROSECONDS_FOR_180_DEGREE, 0, 180);
+  servo1.setEasingType(EASE_CUBIC_IN_OUT);
+  servo2.setEasingType(EASE_CUBIC_IN_OUT);
+  servo3.setEasingType(EASE_CUBIC_IN_OUT);
+
+  servo1.setSpeed(10);
+  servo2.setSpeed(70);
+  servo3.setSpeed(70);
+
+  // Устанавливаем начальные положения ТОЛЬКО если они не равны целевым
+  if (servo1.read() != TARGET_ANGLE1) {
+    servo1.write(TARGET_ANGLE1);
+  }
+  if (servo2.read() != TARGET_ANGLE2) {
+    servo2.write(TARGET_ANGLE2);
+  }
+  if (servo3.read() != TARGET_ANGLE3) {
+    servo3.write(TARGET_ANGLE3);
+  }
+}
+
+void setup() {
+  Serial.begin(115200);  // Увеличенный baud rate
+  initializeServos();
+}
+
+CommandType parseCoordinates(char* line, float& x, float& y) {
+  CommandType commandType = UNKNOWN_COMMAND;
+
+  if (strstr(line, "G0") == line) {
+    commandType = G0_COMMAND;
+  } else if (strstr(line, "G1") == line) {
+    commandType = G1_COMMAND;
+  }
+
+  // Если не G0 / G1
+  if (commandType == UNKNOWN_COMMAND) {
+    Serial.println("Ошибка: Неизвестная команда.");
+    return commandType;
+  }
+
+  char* xPtr = strstr(line, "X");
+  char* yPtr = strstr(line, "Y");
+
+  if (xPtr && yPtr) {
+    x = atof(xPtr + 1);
+    y = atof(yPtr + 1);
+
+    if (isnan(x) || isnan(y)) {
+      Serial.println("Ошибка: Некорректные координаты.");
+      return UNKNOWN_COMMAND;
+    }
+  }
+  return commandType;
+}
+
+#define L1 75.0 // Длина первого звена в миллиметрах
+#define L2 65.0 // Длина второго звена в миллиметрах
+
+void moveToCoordinates(float x, float y, CommandType type) {
+  // Проверка на достижимость точки
+  float distance = sqrt(x * x + y * y);
+  if (distance > (L1 + L2)) {
+    Serial.println("Недостижимая точка: точка находится за пределами рабочей области.");
+    return;
+  }
+
+  // Обратная кинематика: вычисление углов
+  float phi1 = acos((L1 * L1 - L2 * L2 + distance * distance) / (2 * L1 * distance)) * (180.0 / M_PI); // Угол второго звена (в радианах)
+  float phi2 = atan2(y, x) * (180 / M_PI); // Угол первого звена (в радианах)
+
+  // Преобразование углов в градусы
+  float angle2_deg = round(phi1 + phi2);
+  float angle3_deg = round(acos((L1 * L1 + L2 * L2 - distance * distance) / (2 * L1 * L2)) * 180 / M_PI);
+
+  if (isnan(angle2_deg) || isnan(angle3_deg)) {
+    Serial.println("Недостижимая точка: некорректные углы.");
+    return;
+  }
+
+  // Вычисление угла нажатия для сервопривода 1
+  float maxX = 100.0; // Максимальное значение x в миллиметрах
+  float pressureAngle = 15 - (10.0 * x / maxX); // Угол нажатия от 15 до 5 градусов
+  pressureAngle = constrain(pressureAngle, 5, 15); // Ограничиваем угол в диапазоне от 5 до 15 градусов
+
+  // Перемещение сервоприводов
+  if (type == G0_COMMAND) {
+    liftServo(); // Угол сервопривода 1 = 0 градусов
+  } else if (type == G1_COMMAND) {
+    lowerServo(pressureAngle); // Угол сервопривода 1 зависит от X
+  }
+
+  // Ожидание завершения движения сервопривода 1
+  while (servo1.isMoving()) {
+    delay(10);
+  }
+
+  // Перемещение сервоприводов 2 и 3 одновременно
+  moveToAngles(angle2_deg, angle3_deg);
+}
+
+void liftServo() {
+  servo1.startEaseTo(LIFT_SERVO_ANGLE); // Угол сервопривода 1 = 0 градусов
+}
+
+void lowerServo(float pressureAngle) {
+  servo1.startEaseTo(pressureAngle); // Угол сервопривода 1 зависит от X
+}
+
+void moveToAngles(int angle2, int angle3) {
+  servo2.startEaseTo(angle2); // Движение сервопривода 2
+  servo3.startEaseTo(angle3); // Движение сервопривода 3
+
+  // Ожидание завершения движения сервоприводов 2 и 3
+  while (servo2.isMoving() || servo3.isMoving()) {
+    delay(10);
+  }
+}
+
+// Функция для очистки буфера последовательного порта
+void clearSerialBuffer() {
+  while (Serial.available()) {
+    Serial.read();
+  }
+}
+
+void loop() {
+  if (Serial.available()) {
+    char gcode[64];  // Буфер для хранения команды
+    int len = Serial.readBytesUntil('\n', gcode, sizeof(gcode) - 1);
+    gcode[len] = '\0';  // Добавляем завершающий нулевой символ
+    Serial.print("Принята команда: ");
+    Serial.println(gcode);
+
+    float x, y;
+    CommandType type = parseCoordinates(gcode, x, y);
+
+    if (type != UNKNOWN_COMMAND) {
+      moveToCoordinates(x, y, type);
+    }
+
+    // Очищаем буфер после обработки команды
+    clearSerialBuffer();
+
+    // Отправляем подтверждение
+    Serial.println("OK"); // Подтверждение выполнения команды
+  }
+}
