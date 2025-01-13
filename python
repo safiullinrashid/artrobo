@@ -1,0 +1,100 @@
+import serial
+import time
+
+
+class GCodeController:
+    def __init__(self, serial_port, baud_rate=115200):
+        self.serial_port = serial_port
+        self.baud_rate = baud_rate
+        self.ser = None
+        self.connect()
+
+    def connect(self):
+        try:
+            self.ser = serial.Serial(self.serial_port, self.baud_rate, timeout=1)
+            print(f"Подключено к порту: {self.serial_port} с baud rate {self.baud_rate}")
+            time.sleep(2)  # Даем время для установления соединения
+        except serial.SerialException as e:
+            print(f"Ошибка подключения к последовательному порту: {e}")
+            raise
+
+    def send_command(self, gcode):
+        if not self.ser or not self.ser.is_open:
+            print("Ошибка: Порт не подключен.")
+            return
+
+        full_command = f"{gcode}\n"
+        print(f"Отправка команды: {full_command.strip()}")
+
+        # Отправляем команду
+        self.ser.write(full_command.encode())
+
+        # Ожидаем ответа от Arduino
+        response = self.wait_for_response()
+        if response != "OK":
+            print(f"Ошибка: Получен неожиданный ответ: {response}")
+        else:
+            print(f"Команда выполнена успешно: {gcode.strip()}")
+
+    def wait_for_response(self):
+        """Ожидаем ответа от контроллера (например, 'OK')"""
+        while True:
+            if self.ser.in_waiting > 0:  # Проверяем, есть ли данные в очереди
+                response = self.ser.readline().decode().strip()
+                if response:  # Если строка не пустая
+                    return response
+
+    def disconnect(self):
+        if self.ser and self.ser.is_open:
+            self.ser.close()
+            print("Последовательный порт закрыт.")
+
+
+# Функция для чтения G-кода из файла
+def read_gcode_from_file(file_path):
+    try:
+        with open(file_path, 'r') as file:
+            gcode_commands = file.readlines()
+        # Убираем лишние символы (например, переносы строк)
+        gcode_commands = [line.strip() for line in gcode_commands if line.strip()]
+        return gcode_commands
+    except FileNotFoundError:
+        print(f"Ошибка: Файл {file_path} не найден.")
+        return []
+    except Exception as e:
+        print(f"Ошибка при чтении файла: {e}")
+        return []
+
+
+# Основной код
+if __name__ == "__main__":
+    try:
+        # Настройки последовательного порта
+        SERIAL_PORT = 'COM9'  # Убедитесь, что это правильный порт
+        BAUD_RATE = 115200
+
+        # Создаем объект класса GCodeController
+        controller = GCodeController(SERIAL_PORT, BAUD_RATE)
+
+        # Путь к файлу G-кода
+        file_path = r"C:\Users\User\OneDrive\Desktop\output.gcode"
+
+        # Читаем команды из файла
+        gcode_commands = read_gcode_from_file(file_path)
+
+        if not gcode_commands:
+            print("Нет команд для отправки.")
+        else:
+            # Отправляем команды по очереди
+            for command in gcode_commands:
+                controller.send_command(command)
+                time.sleep(0.4)  # Задержка между командами
+
+    except KeyboardInterrupt:
+        print("Программа остановлена пользователем.")
+    except Exception as e:
+        print(f"Произошла ошибка: {e}")
+    finally:
+        # Закрываем порт
+        if 'controller' in locals():
+            controller.disconnect()
